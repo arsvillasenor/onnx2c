@@ -8,35 +8,39 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Download Protobuf (official binary)
-        run: |
-          curl -L -o protobuf.zip https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12-win64.zip
-          powershell -command "Expand-Archive protobuf.zip -DestinationPath protobuf"
+      - name: Download Protobuf (official release)
         shell: powershell
+        run: |
+          $curl = "C:\\Windows\\System32\\curl.exe"
+          & $curl -L `
+            https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12-win64.zip `
+            -o protobuf.zip
+
+          Expand-Archive protobuf.zip -DestinationPath protobuf
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build -A x64 `
-            -DProtobuf_INCLUDE_DIR="protobuf\include" `
-            -DProtobuf_LIBRARY="protobuf\lib\libprotobuf.lib" `
-            -DProtobuf_PROTOC_EXECUTABLE="protobuf\bin\protoc.exe" `
+          cmake -S . -B build -A x64 ^
+            -DProtobuf_INCLUDE_DIR="protobuf\include" ^
+            -DProtobuf_LIBRARY="protobuf\lib\libprotobuf.lib" ^
+            -DProtobuf_PROTOC_EXECUTABLE="protobuf\bin\protoc.exe" ^
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build onnx2c
         run: cmake --build build --config Release --target onnx2c
 
-      - name: Package output
+      - name: Package artifacts
+        shell: powershell
         run: |
           mkdir dist
           copy build\Release\onnx2c.exe dist\
           copy README.md dist\
           copy LICENSE.txt dist\
-        shell: powershell
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
