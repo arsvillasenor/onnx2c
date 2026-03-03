@@ -30,12 +30,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
-            cat > benchmark/CMakeLists.txt << 'EOF'
-            cmake_minimum_required(VERSION 3.16)
-            # Intentionally empty to disable benchmark build on CI.
-            return()
-            EOF
-            echo "Wrote benchmark/CMakeLists.txt"
+            # Write a tiny, valid CMake file to turn benchmark into a no-op
+            printf '%s\n%s\n%s\n' \
+              'cmake_minimum_required(VERSION 3.16)' \
+              '# Intentionally empty to disable benchmark build on CI.' \
+              'return()' \
+              > benchmark/CMakeLists.txt
+            echo "Wrote benchmark/CMakeLists.txt:"
+            sed -n '1,50p' benchmark/CMakeLists.txt
           else
             echo "No benchmark/ dir at $(pwd) — skipping."
           fi
