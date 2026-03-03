@@ -41,6 +41,20 @@ jobs:
           else
             echo "No benchmark/ dir at $(pwd) — skipping."
           fi
+          
+      # (place this step after "Disable benchmark subdir" and before "Configure (CMake)")
+      - name: Patch -Werror for MSVC
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f cmake_timestamp/CMakeLists.txt ]; then
+            # Remove any -Werror occurrences which MSVC cannot consume
+            sed -i 's/-Werror//g' cmake_timestamp/CMakeLists.txt
+            echo "Patched cmake_timestamp/CMakeLists.txt (removed -Werror)"
+            sed -n '1,120p' cmake_timestamp/CMakeLists.txt
+          else
+            echo "cmake_timestamp/CMakeLists.txt not found; skipping."
+          fi
 
       - name: Configure (CMake)
         run: >
