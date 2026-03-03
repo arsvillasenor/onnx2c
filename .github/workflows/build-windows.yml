@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows via vcpkg)
+name: Build onnx2c (Windows, manual vcpkg)
 
 on:
   workflow_dispatch: {}
@@ -8,37 +8,39 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1) Checkout the repo WITH submodules (onnx2c needs the ONNX schema submodule)
+      # 1) Checkout with submodules (onnx schema is a submodule)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2) Install vcpkg and the required dependency (protobuf)
-      #    This action caches vcpkg artifacts to speed up subsequent runs.
-      - name: Setup vcpkg and install protobuf
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgTriplet: x64-windows-static
-          # Install protobuf runtime + development files for MSVC toolchain
-          # You can add more ports separated by spaces if needed.
-          runVcpkgInstall: true
-          vcpkgArguments: protobuf
-          # Optional: Pin a vcpkg commit for reproducibility
-          # vcpkgGitCommitId: 5b1214315250939257ef5d62ecdcbca18cf4fb1c
+      # 2) Bootstrap vcpkg locally (no manifest required)
+      - name: Bootstrap vcpkg
+        shell: powershell
+        run: |
+          git clone https://github.com/microsoft/vcpkg $env:GITHUB_WORKSPACE\vcpkg
+          & $env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat
 
-      # 3) Configure with CMake using vcpkg toolchain so FindProtobuf resolves
+      # 3) Install Protobuf for MSVC x64
+      - name: vcpkg install protobuf
+        shell: powershell
+        run: |
+          & $env:GITHUB_WORKSPACE\vcpkg\vcpkg.exe install protobuf:x64-windows
+          # (You can use x64-windows-static if you prefer static libs.)
+
+      # 4) Configure CMake to use the vcpkg toolchain (so FindProtobuf resolves)
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows
 
-      # 4) Build the onnx2c target
+      # 5) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      # 5) Package the executable and license/readme
+      # 6) Package the executable and license/readme
       - name: Package
         shell: powershell
         run: |
@@ -47,7 +49,7 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
-      # 6) Upload artifact
+      # 7) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
