@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows)
+name: Build onnx2c (Windows via vcpkg)
 
 on:
   workflow_dispatch: {}
@@ -8,57 +8,46 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # 1) Checkout the repo WITH submodules (onnx2c needs the ONNX schema submodule)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Download Protobuf ZIP (robust)
-        shell: powershell
-        run: |
-          $curl = "C:\\Windows\\System32\\curl.exe"
-          
-          # Protobuf stable mirror (latest stable win64)
-          $url = "https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-3.21.12-win64.zip"
+      # 2) Install vcpkg and the required dependency (protobuf)
+      #    This action caches vcpkg artifacts to speed up subsequent runs.
+      - name: Setup vcpkg and install protobuf
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgTriplet: x64-windows-static
+          # Install protobuf runtime + development files for MSVC toolchain
+          # You can add more ports separated by spaces if needed.
+          runVcpkgInstall: true
+          vcpkgArguments: protobuf
+          # Optional: Pin a vcpkg commit for reproducibility
+          # vcpkgGitCommitId: 5b1214315250939257ef5d62ecdcbca18cf4fb1c
 
-          & $curl --fail --location $url -o protobuf.zip
+      # 3) Configure with CMake using vcpkg toolchain so FindProtobuf resolves
+      - name: Configure (CMake)
+        run: >
+          cmake -S . -B build -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
 
-          # Check size > 0
-          $size = (Get-Item protobuf.zip).Length
-          if ($size -lt 100000) {
-            Write-Error "Downloaded protobuf.zip is too small ($size bytes). Download failed."
-          }
-
-      - name: Download 7zip Portable
-        shell: powershell
-        run: |
-          $curl = "C:\\Windows\\System32\\curl.exe"
-          & $curl --fail --location https://www.7-zip.org/a/7zr.exe -o 7zr.exe
-
-      - name: Extract Protobuf using 7zip
-        shell: powershell
-        run: |
-          .\7zr.exe x protobuf.zip -oprotobuf
-
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build -A x64 ^
-            -DProtobuf_INCLUDE_DIR="protobuf\include" ^
-            -DProtobuf_LIBRARY="protobuf\lib\libprotobuf.lib" ^
-            -DProtobuf_PROTOC_EXECUTABLE="protobuf\bin\protoc.exe" ^
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build onnx2c
+      # 4) Build the onnx2c target
+      - name: Build
         run: cmake --build build --config Release --target onnx2c
 
+      # 5) Package the executable and license/readme
       - name: Package
         shell: powershell
         run: |
-          mkdir dist
-          copy build\Release\onnx2c.exe dist\
-          copy README.md dist\
-          copy LICENSE.txt dist\
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build\Release\onnx2c.exe dist\
+          Copy-Item README.md dist\
+          Copy-Item LICENSE.txt dist\
 
+      # 6) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
