@@ -13,21 +13,27 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Download Protobuf ZIP
+      - name: Download Protobuf ZIP (robust)
         shell: powershell
         run: |
           $curl = "C:\\Windows\\System32\\curl.exe"
-          & $curl -L `
-          https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12-win64.zip `
-          -o protobuf.zip
+          
+          # Protobuf stable mirror (latest stable win64)
+          $url = "https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-3.21.12-win64.zip"
+
+          & $curl --fail --location $url -o protobuf.zip
+
+          # Check size > 0
+          $size = (Get-Item protobuf.zip).Length
+          if ($size -lt 100000) {
+            Write-Error "Downloaded protobuf.zip is too small ($size bytes). Download failed."
+          }
 
       - name: Download 7zip Portable
         shell: powershell
         run: |
           $curl = "C:\\Windows\\System32\\curl.exe"
-          & $curl -L `
-          https://www.7-zip.org/a/7zr.exe `
-          -o 7zr.exe
+          & $curl --fail --location https://www.7-zip.org/a/7zr.exe -o 7zr.exe
 
       - name: Extract Protobuf using 7zip
         shell: powershell
@@ -37,9 +43,9 @@ jobs:
       - name: Configure CMake
         run: |
           cmake -S . -B build -A x64 ^
-            -DProtobuf_INCLUDE_DIR="protobuf\protobuf-cpp-3.21.12-win64\include" ^
-            -DProtobuf_LIBRARY="protobuf\protobuf-cpp-3.21.12-win64\lib\libprotobuf.lib" ^
-            -DProtobuf_PROTOC_EXECUTABLE="protobuf\protobuf-cpp-3.21.12-win64\bin\protoc.exe" ^
+            -DProtobuf_INCLUDE_DIR="protobuf\include" ^
+            -DProtobuf_LIBRARY="protobuf\lib\libprotobuf.lib" ^
+            -DProtobuf_PROTOC_EXECUTABLE="protobuf\bin\protoc.exe" ^
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build onnx2c
@@ -49,9 +55,9 @@ jobs:
         shell: powershell
         run: |
           mkdir dist
-          Copy build\Release\onnx2c.exe dist\
-          Copy LICENSE.txt dist\
-          Copy README.md dist\
+          copy build\Release\onnx2c.exe dist\
+          copy README.md dist\
+          copy LICENSE.txt dist\
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
