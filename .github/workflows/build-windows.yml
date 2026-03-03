@@ -8,39 +8,38 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1) Checkout with submodules (onnx schema submodule is required)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2) Bootstrap vcpkg (clone relative to repo to avoid path issues)
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install Protobuf (first run may take ~10–20 min)
       - name: vcpkg install protobuf
         shell: powershell
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # 4) Disable the benchmark subproject (make it a no-op)
-      # This prevents regex backend probing on Windows/MSVC.
-      - name: Disable benchmark subdir
-        shell: powershell
+      # Disable the benchmark subdir so regex backend probing is skipped on Windows.
+      - name: Disable benchmark subdir (bash)
+        shell: bash
         run: |
-          if (Test-Path "benchmark/CMakeLists.txt") {
-            @"
-cmake_minimum_required(VERSION 3.16)
-# Intentionally empty to disable benchmark build on CI.
-return()
-"@ | Out-File -FilePath "benchmark/CMakeLists.txt" -Encoding UTF8 -Force
-          }
+          set -euo pipefail
+          if [ -d benchmark ]; then
+            cat > benchmark/CMakeLists.txt << 'EOF'
+            cmake_minimum_required(VERSION 3.16)
+            # Intentionally empty to disable benchmark build on CI.
+            return()
+            EOF
+            echo "Wrote benchmark/CMakeLists.txt"
+          else
+            echo "No benchmark/ dir at $(pwd) — skipping."
+          fi
 
-      # 5) Configure CMake using vcpkg toolchain
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
@@ -48,11 +47,9 @@ return()
           -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
 
-      # 6) Build only the onnx2c tool
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      # 7) Package the executable + license/readme
       - name: Package
         shell: powershell
         run: |
@@ -61,7 +58,6 @@ return()
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
-      # 8) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
