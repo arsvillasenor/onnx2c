@@ -13,24 +13,30 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Protobuf
-        shell: powershell
+      - name: Download Protobuf (official binary)
         run: |
-          choco install protoc --yes
-          choco install protobuf --yes
+          curl -L -o protobuf.zip https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protobuf-cpp-3.21.12-win64.zip
+          powershell -command "Expand-Archive protobuf.zip -DestinationPath protobuf"
+        shell: powershell
 
       - name: Configure CMake
-        run: cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -S . -B build -A x64 `
+            -DProtobuf_INCLUDE_DIR="protobuf\include" `
+            -DProtobuf_LIBRARY="protobuf\lib\libprotobuf.lib" `
+            -DProtobuf_PROTOC_EXECUTABLE="protobuf\bin\protoc.exe" `
+            -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build
+      - name: Build onnx2c
         run: cmake --build build --config Release --target onnx2c
 
-      - name: Package
+      - name: Package output
         run: |
           mkdir dist
-          copy build/Release/onnx2c.exe dist/
-          copy LICENSE.txt dist/
-          copy README.md dist/
+          copy build\Release\onnx2c.exe dist\
+          copy README.md dist\
+          copy LICENSE.txt dist\
+        shell: powershell
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
