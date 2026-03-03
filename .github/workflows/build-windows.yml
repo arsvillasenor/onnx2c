@@ -1,46 +1,45 @@
 name: Build onnx2c (Windows, manual vcpkg)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # Run manually from the Actions tab
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      # 1) Checkout with submodules (onnx schema is a submodule)
+      # 1) Checkout the repo WITH submodules (onnx schema is a submodule)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2) Bootstrap vcpkg locally (no manifest required)
+      # 2) Bootstrap vcpkg locally (clone relative to repo to avoid path-expansion issues)
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
-          git clone https://github.com/microsoft/vcpkg $env:GITHUB_WORKSPACE\vcpkg
-          & $env:GITHUB_WORKSPACE\vcpkg\bootstrap-vcpkg.bat
+          git clone https://github.com/microsoft/vcpkg vcpkg
+          ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install Protobuf for MSVC x64
+      # 3) Install Protobuf for MSVC x64 (first run may take ~10–20 min)
       - name: vcpkg install protobuf
         shell: powershell
         run: |
-          & $env:GITHUB_WORKSPACE\vcpkg\vcpkg.exe install protobuf:x64-windows
-          # (You can use x64-windows-static if you prefer static libs.)
+          ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # 4) Configure CMake to use the vcpkg toolchain (so FindProtobuf resolves)
+      # 4) Configure with CMake using the vcpkg toolchain file (local relative path)
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
           -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE="%GITHUB_WORKSPACE%\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
 
       # 5) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      # 6) Package the executable and license/readme
+      # 6) Package the executable plus license/readme (convenient artifact)
       - name: Package
         shell: powershell
         run: |
@@ -49,7 +48,7 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
-      # 7) Upload artifact
+      # 7) Upload artifact (download from the run page)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
