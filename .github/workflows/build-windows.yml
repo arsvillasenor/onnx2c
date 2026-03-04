@@ -111,11 +111,16 @@ jobs:
         run: |
           set -euo pipefail
           VCPKG_DIR="$(pwd)/vcpkg/installed/x64-windows"
+      
           cmake -S . -B build -A x64 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DProtobuf_DIR="${VCPKG_DIR}/share/protobuf" \
+            -DProtobuf_USE_STATIC_LIBS=OFF \
+            -DProtobuf_INCLUDE_DIR="${VCPKG_DIR}/include" \
+            -DProtobuf_LIBRARY="${VCPKG_DIR}/lib/libprotobuf.lib" \
+            -DProtobuf_PROTOC_LIBRARY="${VCPKG_DIR}/lib/libprotoc.lib" \
+            -DProtobuf_LITE_LIBRARY="${VCPKG_DIR}/lib/libprotobuf-lite.lib" \
             -DProtobuf_PROTOC_EXECUTABLE="${VCPKG_DIR}/tools/protobuf/protoc.exe" \
             -DCMAKE_C_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX" \
             -DCMAKE_CXX_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX"
