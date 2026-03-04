@@ -8,36 +8,43 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # 1) Checkout with submodules (onnx schema + helper repos are submodules)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      # 2) Bootstrap vcpkg
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      - name: vcpkg install protobuf
+      # 3) Install protobuf as STATIC (so we link a .lib, not a .dll)
+      - name: vcpkg install protobuf (static)
         shell: powershell
         run: |
-          ./vcpkg/vcpkg.exe install protobuf:x64-windows
+          ./vcpkg/vcpkg.exe install protobuf:x64-windows-static
 
+      # 4) Disable the benchmark subdir (Windows regex backend probe fails there)
       - name: Disable benchmark subdir (bash)
         shell: bash
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
+            # Make benchmark a no-op to skip regex backend checks on Windows
             printf '%s\n%s\n%s\n' \
               'cmake_minimum_required(VERSION 3.16)' \
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
+            sed -n '1,50p' benchmark/CMakeLists.txt
           else
             echo "No benchmark/ dir — skipping."
           fi
 
+      # 5) Strip GCC/Clang-only warning flags that break MSVC (/Werror, etc.)
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
@@ -51,35 +58,58 @@ jobs:
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
+      # 6) Ensure the project uses the actual protoc path found by find_package(Protobuf)
       - name: Patch protoc invocation
         shell: bash
         run: |
           set -euo pipefail
           if grep -qE 'COMMAND[[:space:]]+protoc[[:space:]]' CMakeLists.txt; then
             sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
+            # NOTE: single quotes prevent Bash from expanding the variable here.
             echo 'Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}.'
           else
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
 
+      # 7) Undefine Windows ERROR macro in project headers so onnx2c's ERROR(...) wins
+      - name: Undefine Windows ERROR macro in project headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f src/error.h ]; then
+            cp src/error.h src/error.h.bak
+            {
+              echo "#ifdef ERROR"
+              echo "#undef ERROR"
+              echo "#endif"
+              cat src/error.h.bak
+            } > src/error.h
+            echo "Injected #undef ERROR into src/error.h"
+          else
+            echo "src/error.h not found; skipping."
+          fi
+
+      # 8) Clean build dir
       - name: Clean build dir
         shell: bash
         run: |
           rm -rf build
 
+      # 9) Configure with vcpkg toolchain, static triplet, and lean Windows headers
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake"
-          -DVCPKG_TARGET_TRIPLET=x64-windows
-          -DProtobuf_USE_STATIC_LIBS=ON
-          -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX /UERROR"
-          -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX /UERROR"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
+          -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
 
+      # 10) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
+      # 11) Package the executable + license/readme
       - name: Package
         shell: powershell
         run: |
@@ -88,6 +118,7 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
+      # 12) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
