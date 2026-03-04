@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows, vcpkg, Windows fixes)
+name: Build onnx2c (Windows, vcpkg, stable dynamic CRT)
 
 on:
   workflow_dispatch: {}
@@ -21,11 +21,11 @@ jobs:
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install protobuf as STATIC (so we link a .lib, not a .dll)
-      - name: vcpkg install protobuf (static)
+      # 3) Install protobuf as DYNAMIC (/MD) so we don't fight CRT/Abseil
+      - name: vcpkg install protobuf (dynamic)
         shell: powershell
         run: |
-          ./vcpkg/vcpkg.exe install protobuf:x64-windows-static
+          ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
       # 4) Disable the benchmark subdir (Windows regex backend probe fails there)
       - name: Disable benchmark subdir (bash)
@@ -33,13 +33,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
-            # Make benchmark a no-op to skip regex backend checks on Windows
             printf '%s\n%s\n%s\n' \
               'cmake_minimum_required(VERSION 3.16)' \
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
-            sed -n '1,50p' benchmark/CMakeLists.txt
           else
             echo "No benchmark/ dir — skipping."
           fi
@@ -58,52 +56,75 @@ jobs:
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
-      # 6) Ensure the project uses the actual protoc path found by find_package(Protobuf)
+      # 6) Ensure the project uses the actual protoc path found by Protobuf
       - name: Patch protoc invocation
         shell: bash
         run: |
           set -euo pipefail
           if grep -qE 'COMMAND[[:space:]]+protoc[[:space:]]' CMakeLists.txt; then
             sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
-            # NOTE: single quotes prevent Bash from expanding the variable here.
+            # Single quotes to avoid Bash expanding the CMake variable here
             echo 'Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}.'
           else
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
 
-      # 7) Undefine Windows ERROR macro in project headers so onnx2c's ERROR(...) wins
-      - name: Undefine Windows ERROR macro in project headers
+      # 7) Rename onnx2c's logging macro to avoid Windows ERROR macro collisions
+      - name: Rename logging macro ERROR -> O2C_ERROR (avoid Windows macro clash)
         shell: bash
         run: |
           set -euo pipefail
+
+          # Update the macro *definition* in src/error.h
           if [ -f src/error.h ]; then
             cp src/error.h src/error.h.bak
-            {
-              echo "#ifdef ERROR"
-              echo "#undef ERROR"
-              echo "#endif"
-              cat src/error.h.bak
-            } > src/error.h
-            echo "Injected #undef ERROR into src/error.h"
+            # Rename function-like macro: #define ERROR( ... ) -> #define O2C_ERROR( ... )
+            sed -E 's/^([[:space:]]*#\s*define\s+)ERROR(\s*\()/\1O2C_ERROR\2/' src/error.h.bak > src/error.h.tmp
+            mv src/error.h.tmp src/error.h
+            echo "Renamed macro definition in src/error.h → O2C_ERROR(...)"
           else
-            echo "src/error.h not found; skipping."
+            echo "src/error.h not found; cannot rename logging macro — aborting."
+            exit 1
+          fi
+
+          # Rewrite all call sites: ERROR( ... ) -> O2C_ERROR( ... )
+          mapfile -t files < <(git ls-files | grep -E '\.(c|cc|cpp|h|hpp)$' || true)
+          for f in "${files[@]}"; do
+            sed -i -E 's/\bERROR\s*\(/O2C_ERROR(/g' "$f"
+          done
+          echo "Updated all call sites to O2C_ERROR(...)."
+
+          # Keep a guard in case some TU still pulls in Windows' ERROR later (harmless now)
+          if ! grep -q '#undef ERROR' src/error.h; then
+            sed -i '1i #ifdef ERROR\n#undef ERROR\n#endif' src/error.h
+            echo "Injected #undef ERROR guard at top of src/error.h"
           fi
 
       # 8) Clean build dir
       - name: Clean build dir
         shell: bash
-        run: |
-          rm -rf build
+        run: rm -rf build
 
-      # 9) Configure with vcpkg toolchain, static triplet, and lean Windows headers
+      # 9) Configure with vcpkg toolchain, dynamic triplet, and lean Windows headers
+      #    We explicitly point FindProtobuf (module mode) at vcpkg's include + IMPORT LIBS.
+      #    This ensures the linker gets .lib files (not .dll), avoids LNK1107, and stays on /MD.
       - name: Configure (CMake)
-        run: >
-          cmake -S . -B build -A x64
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake"
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
-          -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
-          -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
+        shell: bash
+        run: |
+          set -euo pipefail
+          VCPKG_DIR="$(pwd)/vcpkg/installed/x64-windows"
+          cmake -S . -B build -A x64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DProtobuf_USE_STATIC_LIBS=OFF \
+            -DProtobuf_INCLUDE_DIR="${VCPKG_DIR}/include" \
+            -DProtobuf_LIBRARY="${VCPKG_DIR}/lib/libprotobuf.lib" \
+            -DProtobuf_PROTOC_LIBRARY="${VCPKG_DIR}/lib/libprotoc.lib" \
+            -DProtobuf_LITE_LIBRARY="${VCPKG_DIR}/lib/libprotobuf-lite.lib" \
+            -DProtobuf_PROTOC_EXECUTABLE="${VCPKG_DIR}/tools/protobuf/protoc.exe" \
+            -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX" \
+            -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
 
       # 10) Build the onnx2c target
       - name: Build
