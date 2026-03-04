@@ -72,6 +72,26 @@ jobs:
           else
             echo "No bare 'protoc' invocation found in CMakeLists.txt."
           fi
+      
+      - name: Force UNICODE and lean Windows headers for MSVC
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Insert a small block after the first 'project(' line in the top CMakeLists.txt
+          awk '
+            BEGIN {added=0}
+            {
+              print
+              if (!added && $0 ~ /^project *\(/) {
+                print "if(MSVC)"
+                print "  # Use Unicode Win32 APIs and keep <windows.h> lean to avoid macro collisions"
+                print "  add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOGDI NOMINMAX)"
+                print "endif()"
+                added=1
+              }
+            }' CMakeLists.txt > CMakeLists.txt.new
+          mv CMakeLists.txt.new CMakeLists.txt
+          echo "Injected UNICODE/_UNICODE + WIN32_LEAN_AND_MEAN/NOGDI/NOMINMAX for MSVC."
 
       - name: Configure (CMake)
         run: >
