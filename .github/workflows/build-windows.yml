@@ -30,31 +30,26 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
-            # Write a tiny, valid CMake file to turn benchmark into a no-op
             printf '%s\n%s\n%s\n' \
               'cmake_minimum_required(VERSION 3.16)' \
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
-            echo "Wrote benchmark/CMakeLists.txt:"
-            sed -n '1,50p' benchmark/CMakeLists.txt
           else
             echo "No benchmark/ dir at $(pwd) — skipping."
           fi
-          
-      # (place this step after "Disable benchmark subdir" and before "Configure (CMake)")
-      - name: Patch -Werror for MSVC
+
+      - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f cmake_timestamp/CMakeLists.txt ]; then
-            # Remove any -Werror occurrences which MSVC cannot consume
-            sed -i 's/-Werror//g' cmake_timestamp/CMakeLists.txt
-            echo "Patched cmake_timestamp/CMakeLists.txt (removed -Werror)"
-            sed -n '1,120p' cmake_timestamp/CMakeLists.txt
-          else
-            echo "cmake_timestamp/CMakeLists.txt not found; skipping."
-          fi
+          for f in CMakeLists.txt cmake_timestamp/CMakeLists.txt benchmark/CMakeLists.txt; do
+            if [ -f "$f" ]; then
+              sed -i 's/-Werror//g' "$f"
+              sed -i 's/-Wall//g' "$f"
+            fi
+          done
+          echo "Patched CMakeLists to drop GCC-only flags."
 
       - name: Configure (CMake)
         run: >
