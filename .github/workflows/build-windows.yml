@@ -106,8 +106,7 @@ jobs:
         run: rm -rf build
 
       # 9) Configure with vcpkg toolchain, dynamic triplet, and lean Windows headers
-      #    We explicitly point FindProtobuf (module mode) at vcpkg's include + IMPORT LIBS.
-      #    This ensures the linker gets .lib files (not .dll), avoids LNK1107, and stays on /MD.
+      #    IMPORTANT: use -D (not /D) to avoid Git Bash/MSYS path conversion of leading-slash args.
       - name: Configure (CMake)
         shell: bash
         run: |
@@ -123,8 +122,8 @@ jobs:
             -DProtobuf_PROTOC_LIBRARY="${VCPKG_DIR}/lib/libprotoc.lib" \
             -DProtobuf_LITE_LIBRARY="${VCPKG_DIR}/lib/libprotobuf-lite.lib" \
             -DProtobuf_PROTOC_EXECUTABLE="${VCPKG_DIR}/tools/protobuf/protoc.exe" \
-            -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX" \
-            -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
+            -DCMAKE_C_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX" \
+            -DCMAKE_CXX_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX"
 
       # 10) Build the onnx2c target
       - name: Build
