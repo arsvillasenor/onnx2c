@@ -46,13 +46,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Files that set/add GCC/Clang-only flags
           for f in CMakeLists.txt cmake_timestamp/CMakeLists.txt benchmark/CMakeLists.txt; do
             if [ -f "$f" ]; then
-              sed -i 's/-Werror//g' "$f"
-              sed -i 's/-Wall//g'  "$f"
+              # Drop flags that break MSVC
+              sed -i 's/-Wfatal-errors//g' "$f"
+              sed -i 's/-Werror//g'        "$f"
+              sed -i 's/-Wall//g'          "$f"   # optional, keeps MSVC output sane
             fi
           done
-          echo "Patched CMakeLists to drop -Werror/-Wall for MSVC."
+          echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
       # --- 3) Make the build use the actual protoc path from find_package(Protobuf) ---
       # The upstream CMakeLists uses a hard-coded `protoc` command (fails on Windows PATH).
