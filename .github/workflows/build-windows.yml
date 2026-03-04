@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows, vcpkg, stable dynamic CRT)
+name: Build onnx2c (Windows, vcpkg, CONFIG-mode Protobuf)
 
 on:
   workflow_dispatch: {}
@@ -21,7 +21,7 @@ jobs:
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install protobuf as DYNAMIC (/MD) so we don't fight CRT/Abseil
+      # 3) Install protobuf as DYNAMIC (/MD). CONFIG package is provided under share/protobuf.
       - name: vcpkg install protobuf (dynamic)
         shell: powershell
         run: |
@@ -56,14 +56,13 @@ jobs:
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
-      # 6) Ensure the project uses the actual protoc path found by Protobuf
+      # 6) Ensure the project uses the actual protoc path (works for both module & CONFIG)
       - name: Patch protoc invocation
         shell: bash
         run: |
           set -euo pipefail
           if grep -qE 'COMMAND[[:space:]]+protoc[[:space:]]' CMakeLists.txt; then
             sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
-            # Single quotes to avoid Bash expanding the CMake variable here
             echo 'Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}.'
           else
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
@@ -94,7 +93,7 @@ jobs:
           done
           echo "Updated all call sites to O2C_ERROR(...)."
 
-          # Keep a guard in case some TU still pulls in Windows' ERROR later (harmless now)
+          # Guard (harmless now) if any Windows header still defines ERROR
           if ! grep -q '#undef ERROR' src/error.h; then
             sed -i '1i #ifdef ERROR\n#undef ERROR\n#endif' src/error.h
             echo "Injected #undef ERROR guard at top of src/error.h"
@@ -105,8 +104,8 @@ jobs:
         shell: bash
         run: rm -rf build
 
-      # 9) Configure with vcpkg toolchain, dynamic triplet, and lean Windows headers
-      #    IMPORTANT: use -D (not /D) to avoid Git Bash/MSYS path conversion of leading-slash args.
+      # 9) Configure with vcpkg toolchain and CONFIG-mode Protobuf.
+      #    IMPORTANT: use -D (not /D) so Git Bash/MSYS doesn't path-convert flags.
       - name: Configure (CMake)
         shell: bash
         run: |
@@ -116,11 +115,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DProtobuf_USE_STATIC_LIBS=OFF \
-            -DProtobuf_INCLUDE_DIR="${VCPKG_DIR}/include" \
-            -DProtobuf_LIBRARY="${VCPKG_DIR}/lib/libprotobuf.lib" \
-            -DProtobuf_PROTOC_LIBRARY="${VCPKG_DIR}/lib/libprotoc.lib" \
-            -DProtobuf_LITE_LIBRARY="${VCPKG_DIR}/lib/libprotobuf-lite.lib" \
+            -DProtobuf_DIR="${VCPKG_DIR}/share/protobuf" \
             -DProtobuf_PROTOC_EXECUTABLE="${VCPKG_DIR}/tools/protobuf/protoc.exe" \
             -DCMAKE_C_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX" \
             -DCMAKE_CXX_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX"
