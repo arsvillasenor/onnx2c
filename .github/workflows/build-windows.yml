@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows, vcpkg, benchmark disabled)
+name: Build onnx2c (Windows, vcpkg, benchmark+MSVC fixes)
 
 on:
   workflow_dispatch: {}
@@ -24,21 +24,24 @@ jobs:
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # Disable the benchmark subdir so regex backend probing is skipped on Windows.
+      # --- 1) Disable the benchmark subdir (Windows regex probe fails there) ---
       - name: Disable benchmark subdir (bash)
         shell: bash
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
+            # Make benchmark a no-op to skip regex backend checks on Windows
             printf '%s\n%s\n%s\n' \
               'cmake_minimum_required(VERSION 3.16)' \
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
+            echo "Wrote benchmark/CMakeLists.txt"
           else
-            echo "No benchmark/ dir at $(pwd) — skipping."
+            echo "No benchmark/ dir — skipping."
           fi
 
+      # --- 2) Strip GCC-only flags so MSVC won't see /Werror (D8021) ---
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
@@ -46,10 +49,26 @@ jobs:
           for f in CMakeLists.txt cmake_timestamp/CMakeLists.txt benchmark/CMakeLists.txt; do
             if [ -f "$f" ]; then
               sed -i 's/-Werror//g' "$f"
-              sed -i 's/-Wall//g' "$f"
+              sed -i 's/-Wall//g'  "$f"
             fi
           done
-          echo "Patched CMakeLists to drop GCC-only flags."
+          echo "Patched CMakeLists to drop -Werror/-Wall for MSVC."
+
+      # --- 3) Make the build use the actual protoc path from find_package(Protobuf) ---
+      # The upstream CMakeLists uses a hard-coded `protoc` command (fails on Windows PATH).
+      # Replace it with ${Protobuf_PROTOC_EXECUTABLE}.
+      - name: Patch protoc invocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q "COMMAND[[:space:]]\+protoc[[:space:]]" CMakeLists.txt; then
+            # Replace only the leading 'protoc ' token of that COMMAND line
+            # (keep --proto_path and the rest untouched)
+            sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
+            echo "Patched CMakeLists.txt to use \${Protobuf_PROTOC_EXECUTABLE}."
+          else
+            echo "No bare 'protoc' invocation found in CMakeLists.txt."
+          fi
 
       - name: Configure (CMake)
         run: >
