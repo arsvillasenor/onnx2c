@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows, vcpkg, benchmark+MSVC fixes)
+name: Build onnx2c (Windows, vcpkg, Windows fixes)
 
 on:
   workflow_dispatch: {}
@@ -8,23 +8,26 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # 1) Checkout with submodules (onnx schema + helper repos are submodules)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      # 2) Bootstrap vcpkg
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
+      # 3) Install protobuf (headers, libprotobuf, protoc.exe)
       - name: vcpkg install protobuf
         shell: powershell
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # --- 1) Disable the benchmark subdir (Windows regex probe fails there) ---
+      # 4) Disable the benchmark subdir (Windows regex backend probe fails there)
       - name: Disable benchmark subdir (bash)
         shell: bash
         run: |
@@ -36,73 +39,60 @@ jobs:
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
-            echo "Wrote benchmark/CMakeLists.txt"
+            sed -n '1,50p' benchmark/CMakeLists.txt
           else
             echo "No benchmark/ dir — skipping."
           fi
 
-      # --- 2) Strip GCC-only flags so MSVC won't see /Werror (D8021) ---
+      # 5) Strip GCC/Clang-only warning flags that break MSVC (/Werror, etc.)
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
           set -euo pipefail
-          # Files that set/add GCC/Clang-only flags
           for f in CMakeLists.txt cmake_timestamp/CMakeLists.txt benchmark/CMakeLists.txt; do
             if [ -f "$f" ]; then
-              # Drop flags that break MSVC
-              sed -i 's/-Wfatal-errors//g' "$f"
-              sed -i 's/-Werror//g'        "$f"
-              sed -i 's/-Wall//g'          "$f"   # optional, keeps MSVC output sane
+              sed -i 's/-Wfatal-errors//g' "$f" || true
+              sed -i 's/-Werror//g'        "$f" || true
+              sed -i 's/-Wall//g'          "$f" || true
             fi
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
-      # --- 3) Make the build use the actual protoc path from find_package(Protobuf) ---
-      # The upstream CMakeLists uses a hard-coded `protoc` command (fails on Windows PATH).
-      # Replace it with ${Protobuf_PROTOC_EXECUTABLE}.
+      # 6) Ensure the project uses the actual protoc path found by find_package(Protobuf)
       - name: Patch protoc invocation
         shell: bash
         run: |
           set -euo pipefail
-          if grep -q "COMMAND[[:space:]]\+protoc[[:space:]]" CMakeLists.txt; then
-            # Replace only the leading 'protoc ' token of that COMMAND line
-            # (keep --proto_path and the rest untouched)
+          if grep -qE 'COMMAND[[:space:]]+protoc[[:space:]]' CMakeLists.txt; then
             sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
-            echo "Patched CMakeLists.txt to use \${Protobuf_PROTOC_EXECUTABLE}."
+            echo "Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}."
           else
-            echo "No bare 'protoc' invocation found in CMakeLists.txt."
+            echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
-      
-      - name: Force UNICODE and lean Windows headers for MSVC
+
+      # 7) Clean any previous CMake cache
+      - name: Clean build dir
         shell: bash
         run: |
-          set -euo pipefail
-          # Insert a small block after the first 'project(' line in the top CMakeLists.txt
-          awk '
-            BEGIN {added=0}
-            {
-              print
-              if (!added && $0 ~ /^project *\(/) {
-                print "if(MSVC)"
-                print "  # Use Unicode Win32 APIs and keep <windows.h> lean to avoid macro collisions"
-                print "  add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOGDI NOMINMAX)"
-                print "endif()"
-                added=1
-              }
-            }' CMakeLists.txt > CMakeLists.txt.new
-          mv CMakeLists.txt.new CMakeLists.txt
-          echo "Injected UNICODE/_UNICODE + WIN32_LEAN_AND_MEAN/NOGDI/NOMINMAX for MSVC."
+          rm -rf build
 
+      # 8) Configure with vcpkg toolchain AND pass Windows defines via compiler flags
+      #    - UNICODE/_UNICODE => select wide Win32 APIs (…W) so wchar_t* matches AixLog on Windows
+      #    - WIN32_LEAN_AND_MEAN, NOGDI, NOMINMAX => keep windows.h slim, avoid ERROR/min/max macro collisions
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
+          -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
 
+      # 9) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
+      # 10) Package the executable + license/readme
       - name: Package
         shell: powershell
         run: |
@@ -111,6 +101,7 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
+      # 11) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
