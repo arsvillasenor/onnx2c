@@ -8,32 +8,27 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1) Checkout with submodules (onnx schema + helper repos are submodules)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2) Bootstrap vcpkg
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install protobuf (headers, libprotobuf, protoc.exe)
       - name: vcpkg install protobuf
         shell: powershell
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # 4) Disable the benchmark subdir (Windows regex backend probe fails there)
       - name: Disable benchmark subdir (bash)
         shell: bash
         run: |
           set -euo pipefail
           if [ -d benchmark ]; then
-            # Make benchmark a no-op to skip regex backend checks on Windows
             printf '%s\n%s\n%s\n' \
               'cmake_minimum_required(VERSION 3.16)' \
               '# Intentionally empty to disable benchmark build on CI.' \
@@ -44,7 +39,6 @@ jobs:
             echo "No benchmark/ dir — skipping."
           fi
 
-      # 5) Strip GCC/Clang-only warning flags that break MSVC (/Werror, etc.)
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
@@ -58,27 +52,23 @@ jobs:
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
-      # 6) Ensure the project uses the actual protoc path found by find_package(Protobuf)
       - name: Patch protoc invocation
         shell: bash
         run: |
           set -euo pipefail
           if grep -qE 'COMMAND[[:space:]]+protoc[[:space:]]' CMakeLists.txt; then
             sed -i 's/COMMAND[[:space:]]\+protoc[[:space:]]\+/COMMAND ${Protobuf_PROTOC_EXECUTABLE} /' CMakeLists.txt
-            echo "Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}."
+            # NOTE: single quotes prevent Bash from expanding the variable here.
+            echo 'Patched root CMakeLists.txt to use ${Protobuf_PROTOC_EXECUTABLE}.'
           else
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
 
-      # 7) Clean any previous CMake cache
       - name: Clean build dir
         shell: bash
         run: |
           rm -rf build
 
-      # 8) Configure with vcpkg toolchain AND pass Windows defines via compiler flags
-      #    - UNICODE/_UNICODE => select wide Win32 APIs (…W) so wchar_t* matches AixLog on Windows
-      #    - WIN32_LEAN_AND_MEAN, NOGDI, NOMINMAX => keep windows.h slim, avoid ERROR/min/max macro collisions
       - name: Configure (CMake)
         run: >
           cmake -S . -B build -A x64
@@ -88,11 +78,9 @@ jobs:
           -DCMAKE_C_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
           -DCMAKE_CXX_FLAGS="/DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOGDI /DNOMINMAX"
 
-      # 9) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      # 10) Package the executable + license/readme
       - name: Package
         shell: powershell
         run: |
@@ -101,7 +89,6 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
-      # 11) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
