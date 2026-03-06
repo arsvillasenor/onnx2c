@@ -8,26 +8,22 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1) Checkout with submodules (onnx schema + helper repos are submodules)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2) Bootstrap vcpkg
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg vcpkg
           ./vcpkg/bootstrap-vcpkg.bat
 
-      # 3) Install protobuf as DYNAMIC (/MD). CONFIG package is provided under share/protobuf.
       - name: vcpkg install protobuf (dynamic)
         shell: powershell
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      # 4) Disable the benchmark subdir (Windows regex backend probe fails there)
       - name: Disable benchmark subdir (bash)
         shell: bash
         run: |
@@ -42,7 +38,6 @@ jobs:
             echo "No benchmark/ dir — skipping."
           fi
 
-      # 5) Strip GCC/Clang-only warning flags that break MSVC (/Werror, etc.)
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
@@ -56,7 +51,6 @@ jobs:
           done
           echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
-      # 6) Ensure the project uses the actual protoc path (works for both module & CONFIG)
       - name: Patch protoc invocation
         shell: bash
         run: |
@@ -68,16 +62,12 @@ jobs:
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
 
-      # 7) Rename onnx2c's logging macro to avoid Windows ERROR macro collisions
       - name: Rename logging macro ERROR -> O2C_ERROR (avoid Windows macro clash)
         shell: bash
         run: |
           set -euo pipefail
-
-          # Update the macro *definition* in src/error.h
           if [ -f src/error.h ]; then
             cp src/error.h src/error.h.bak
-            # Rename function-like macro: #define ERROR( ... ) -> #define O2C_ERROR( ... )
             sed -E 's/^([[:space:]]*#\s*define\s+)ERROR(\s*\()/\1O2C_ERROR\2/' src/error.h.bak > src/error.h.tmp
             mv src/error.h.tmp src/error.h
             echo "Renamed macro definition in src/error.h → O2C_ERROR(...)"
@@ -85,51 +75,38 @@ jobs:
             echo "src/error.h not found; cannot rename logging macro — aborting."
             exit 1
           fi
-
-          # Rewrite all call sites: ERROR( ... ) -> O2C_ERROR( ... )
           mapfile -t files < <(git ls-files | grep -E '\.(c|cc|cpp|h|hpp)$' || true)
           for f in "${files[@]}"; do
             sed -i -E 's/\bERROR\s*\(/O2C_ERROR(/g' "$f"
           done
           echo "Updated all call sites to O2C_ERROR(...)."
-
-          # Guard (harmless now) if any Windows header still defines ERROR
           if ! grep -q '#undef ERROR' src/error.h; then
             sed -i '1i #ifdef ERROR\n#undef ERROR\n#endif' src/error.h
             echo "Injected #undef ERROR guard at top of src/error.h"
           fi
 
-      # 8) Clean build dir
       - name: Clean build dir
         shell: bash
         run: rm -rf build
 
-      # 9) Configure with vcpkg toolchain and CONFIG-mode Protobuf.
-      #    IMPORTANT: use -D (not /D) so Git Bash/MSYS doesn't path-convert flags.
       - name: Configure (CMake)
         shell: bash
         run: |
           set -euo pipefail
           VCPKG_DIR="$(pwd)/vcpkg/installed/x64-windows"
-      
           cmake -S . -B build -A x64 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-windows \
-            -DProtobuf_USE_STATIC_LIBS=OFF \
-            -DProtobuf_INCLUDE_DIR="${VCPKG_DIR}/include" \
-            -DProtobuf_LIBRARY="${VCPKG_DIR}/lib/libprotobuf.lib" \
-            -DProtobuf_PROTOC_LIBRARY="${VCPKG_DIR}/lib/libprotoc.lib" \
-            -DProtobuf_LITE_LIBRARY="${VCPKG_DIR}/lib/libprotobuf-lite.lib" \
+            -DProtobuf_DIR="${VCPKG_DIR}/share/protobuf" \
+            -DProtobuf_LIBRARIES="protobuf::libprotobuf" \
             -DProtobuf_PROTOC_EXECUTABLE="${VCPKG_DIR}/tools/protobuf/protoc.exe" \
             -DCMAKE_C_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX" \
             -DCMAKE_CXX_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX"
 
-      # 10) Build the onnx2c target
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      # 11) Package the executable + license/readme
       - name: Package
         shell: powershell
         run: |
@@ -138,7 +115,6 @@ jobs:
           Copy-Item README.md dist\
           Copy-Item LICENSE.txt dist\
 
-      # 12) Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
