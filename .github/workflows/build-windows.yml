@@ -1,4 +1,4 @@
-name: Build onnx2c (Windows, vcpkg, CONFIG-mode Protobuf)
+name: Build onnx2c (Windows, bundle DLLs)
 
 on:
   workflow_dispatch: {}
@@ -8,23 +8,42 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # 0) Speed up vcpkg by caching its build outputs
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg/installed
+            vcpkg/buildtrees
+            vcpkg/packages
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      # 1) Checkout with submodules (onnx schema + helpers)
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      # 2) Bootstrap vcpkg
       - name: Bootstrap vcpkg
         shell: powershell
         run: |
-          git clone https://github.com/microsoft/vcpkg vcpkg
-          ./vcpkg/bootstrap-vcpkg.bat
+          if (-Not (Test-Path vcpkg)) {
+            git clone https://github.com/microsoft/vcpkg vcpkg
+            ./vcpkg/bootstrap-vcpkg.bat
+          } else {
+            Write-Host "vcpkg folder exists, skipping clone/bootstrap."
+          }
 
+      # 3) Install protobuf (dynamic) – provides DLLs under installed/x64-windows/bin
       - name: vcpkg install protobuf (dynamic)
         shell: powershell
         run: |
           ./vcpkg/vcpkg.exe install protobuf:x64-windows
 
-      - name: Disable benchmark subdir (bash)
+      # 4) Disable the benchmark subdir (optional; known to cause Windows regex probe failures)
+      - name: Disable benchmark subdir
         shell: bash
         run: |
           set -euo pipefail
@@ -34,10 +53,9 @@ jobs:
               '# Intentionally empty to disable benchmark build on CI.' \
               'return()' \
               > benchmark/CMakeLists.txt
-          else
-            echo "No benchmark/ dir — skipping."
           fi
 
+      # 5) Strip GCC-only flags that confuse MSVC
       - name: Patch GCC-only flags for MSVC
         shell: bash
         run: |
@@ -49,8 +67,8 @@ jobs:
               sed -i 's/-Wall//g'          "$f" || true
             fi
           done
-          echo "Patched CMakeLists to drop -Wfatal-errors/-Werror/(-Wall) for MSVC."
 
+      # 6) Patch any bare 'protoc' to use the discovered Protobuf_PROTOC_EXECUTABLE
       - name: Patch protoc invocation
         shell: bash
         run: |
@@ -62,7 +80,8 @@ jobs:
             echo "No bare 'protoc' invocation found in root CMakeLists.txt."
           fi
 
-      - name: Rename logging macro ERROR -> O2C_ERROR (avoid Windows macro clash)
+      # 7) Prevent Windows ERROR macro collisions: rename project macro ERROR(...) -> O2C_ERROR(...)
+      - name: Rename logging macro ERROR -> O2C_ERROR
         shell: bash
         run: |
           set -euo pipefail
@@ -70,25 +89,22 @@ jobs:
             cp src/error.h src/error.h.bak
             sed -E 's/^([[:space:]]*#\s*define\s+)ERROR(\s*\()/\1O2C_ERROR\2/' src/error.h.bak > src/error.h.tmp
             mv src/error.h.tmp src/error.h
-            echo "Renamed macro definition in src/error.h → O2C_ERROR(...)"
-          else
-            echo "src/error.h not found; cannot rename logging macro — aborting."
-            exit 1
           fi
           mapfile -t files < <(git ls-files | grep -E '\.(c|cc|cpp|h|hpp)$' || true)
           for f in "${files[@]}"; do
             sed -i -E 's/\bERROR\s*\(/O2C_ERROR(/g' "$f"
           done
-          echo "Updated all call sites to O2C_ERROR(...)."
-          if ! grep -q '#undef ERROR' src/error.h; then
+          if [ -f src/error.h ] && ! grep -q '#undef ERROR' src/error.h; then
             sed -i '1i #ifdef ERROR\n#undef ERROR\n#endif' src/error.h
-            echo "Injected #undef ERROR guard at top of src/error.h"
           fi
 
+      # 8) Clean build dir
       - name: Clean build dir
         shell: bash
         run: rm -rf build
 
+      # 9) Configure with vcpkg toolchain; force CONFIG mode + imported target usage.
+      #    Use '-D' (not '/D') so Git Bash/MSYS doesn't path-convert flags.
       - name: Configure (CMake)
         shell: bash
         run: |
@@ -104,17 +120,48 @@ jobs:
             -DCMAKE_C_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX" \
             -DCMAKE_CXX_FLAGS="-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOGDI -DNOMINMAX"
 
+      # 10) Build
       - name: Build
         run: cmake --build build --config Release --target onnx2c
 
-      - name: Package
+      # 11) Stage distribution: exe + required runtime DLLs (from vcpkg/bin and build/Release)
+      - name: Stage dist (exe + DLLs)
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item build\Release\onnx2c.exe dist\
-          Copy-Item README.md dist\
-          Copy-Item LICENSE.txt dist\
 
+          # Copy the main executable
+          Copy-Item -Path build\Release\onnx2c.exe -Destination dist\
+
+          # Copy readme / license if present
+          if (Test-Path README.md) { Copy-Item README.md dist\ }
+          if (Test-Path LICENSE.txt) { Copy-Item LICENSE.txt dist\ }
+
+          # Copy all DLLs from vcpkg installed bin (protobuf/abseil and others)
+          $vcpkgBin = Join-Path $pwd 'vcpkg\installed\x64-windows\bin'
+          if (Test-Path $vcpkgBin) {
+            Copy-Item -Path (Join-Path $vcpkgBin '*.dll') -Destination dist\ -Force -ErrorAction SilentlyContinue
+          }
+
+          # Copy any project-built DLLs (if your build emits any)
+          if (Test-Path build\Release) {
+            Copy-Item -Path 'build\Release\*.dll' -Destination dist\ -Force -ErrorAction SilentlyContinue
+          }
+
+          # Optional: list what we packaged
+          Write-Host "=== dist contents ==="
+          Get-ChildItem -Path dist | ForEach-Object { Write-Host $_.Name }
+
+      # 12) Smoke test from the packaged folder (ensures the zipped app runs on a clean box)
+      - name: Smoke test (run from dist)
+        shell: powershell
+        run: |
+          Push-Location dist
+          .\onnx2c.exe --help | Select-Object -First 10
+          if ($LASTEXITCODE -ne 0) { throw "onnx2c.exe failed to run" }
+          Pop-Location
+
+      # 13) Zip and upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
